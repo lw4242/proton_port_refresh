@@ -13,8 +13,8 @@ import subprocess
 # ------------------- CONFIG -------------------
 VPN_EXE = r"C:\Program Files\Proton\VPN\ProtonVPN.Launcher.exe"
 QBIT_EXE = r"C:\Program Files\qBittorrent\qbittorrent.exe"
-QBIT_CONFIG = r"C:\Users\<YourUsername>\AppData\Roaming\qBittorrent\qBittorrent.ini"
-LOG_DIR = r"C:\Users\<YourUsername>\AppData\Local\Proton\Proton VPN\Logs"
+QBIT_CONFIG = r"C:\Users\Plex\AppData\Roaming\qBittorrent\qBittorrent.ini"
+LOG_DIR = r"C:\Users\Plex\AppData\Local\Proton\Proton VPN\Logs"
 
 PROCESS_ACTIONS = {
     "openvpn.exe": "kill",
@@ -93,12 +93,24 @@ def wait_for_port_in_log(log_file):
 
 def update_qbittorrent_port(port):
     print("Updating qBittorrent config...")
-    with open(QBIT_CONFIG, "r") as f:
-        config = f.read()
-    config = re.sub(QBIT_PORT_PATTERN, rf"\1{port}", config)
-    with open(QBIT_CONFIG, "w") as f:
-        f.write(config)
-    print("Port updated.")
+
+    config_file = QBIT_CONFIG
+    updated = False
+    lines = []
+
+    with open(config_file, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if line.strip().startswith("Session\\Port="):
+                line = f"Session\\Port={port}\n"
+                updated = True
+            lines.append(line)
+
+    if updated:
+        with open(config_file, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        print(f"Port updated to {port}.")
+    else:
+        print("No Session\\Port line found to update.")
 
 def launch_qbittorrent():
     print("Starting qBittorrent...")
@@ -126,3 +138,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
