@@ -1,5 +1,6 @@
 # This script kills qbittorrent, ProtonVPN and all its associated components, then restarts everything and copies the port number into qbittorrent's config file
 # Credit to axel-devs for original script. This update fixes problems occurring with the new v4 ProtonVPN client
+# Be sure to run this script as admin (some kill commands require elevation) and configure your ProtonVPN client to connect to a random server on startup
 
 import os
 import re
