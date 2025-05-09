@@ -1,6 +1,7 @@
 # This script kills qbittorrent, ProtonVPN and all its associated components, then restarts everything and copies the port number into qbittorrent's config file
 # Credit to axel-devs for original script. This update fixes problems occurring with the new v4 ProtonVPN client
 # Be sure to run this script as admin (some kill commands require elevation) and configure your ProtonVPN client to connect to a random server on startup
+# Also change your directories in the CONFIG section of this script to match the correct paths for your system
 
 import os
 import re
@@ -12,8 +13,8 @@ import subprocess
 # ------------------- CONFIG -------------------
 VPN_EXE = r"C:\Program Files\Proton\VPN\ProtonVPN.Launcher.exe"
 QBIT_EXE = r"C:\Program Files\qBittorrent\qbittorrent.exe"
-QBIT_CONFIG = r"C:\Users\Plex\AppData\Roaming\qBittorrent\qBittorrent.ini"
-LOG_DIR = r"C:\Users\Plex\AppData\Local\Proton\Proton VPN\Logs"
+QBIT_CONFIG = r"C:\Users\<YourUsername>\AppData\Roaming\qBittorrent\qBittorrent.ini"
+LOG_DIR = r"C:\Users\<YourUsername>\AppData\Local\Proton\Proton VPN\Logs"
 
 PROCESS_ACTIONS = {
     "openvpn.exe": "kill",
