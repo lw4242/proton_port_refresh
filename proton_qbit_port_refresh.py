@@ -13,8 +13,8 @@ import subprocess
 # ------------------- CONFIG -------------------
 VPN_EXE = r"C:\Program Files\Proton\VPN\ProtonVPN.Launcher.exe"
 QBIT_EXE = r"C:\Program Files\qBittorrent\qbittorrent.exe"
-QBIT_CONFIG = r"C:\Users\Plex\AppData\Roaming\qBittorrent\qBittorrent.ini"
-LOG_DIR = r"C:\Users\Plex\AppData\Local\Proton\Proton VPN\Logs"
+QBIT_CONFIG = r"C:\Users\<YourUsername>\AppData\Roaming\qBittorrent\qBittorrent.ini"
+LOG_DIR = r"C:\Users\<YourUsername>\AppData\Local\Proton\Proton VPN\Logs"
 
 PROCESS_ACTIONS = {
     "openvpn.exe": "kill",
