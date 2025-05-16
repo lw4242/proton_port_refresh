@@ -1,14 +1,18 @@
-# This script kills qBittorrent, ProtonVPN and all its associated components, then restarts everything and copies the port number into qBittorrent's config file
+# This script kills qBittorrent, ProtonVPN and all their associated components, then restarts everything and copies the port number into qBittorrent's config file
 # Tested working as of ProtonVPN client 4.1.12 and qBittorrent 5.1.0
-# Be sure to run this script as admin (some kill commands require elevation) and configure your ProtonVPN client to connect to a random server on startup
+# It must be run as an administrator
+# Configure your ProtonVPN client to connect to a random server on startup
 # Also change your directories in the CONFIG section of this script to match the correct paths for your system
+# If enabling debug logging then set LOGGING_ENABLED = True and provide a valid file path
 
 import os
 import re
 import time
 import psutil
 import glob
-import subprocess
+import logging
+import sys
+import ctypes
 
 # ------------------- CONFIG -------------------
 VPN_EXE = r"C:\Program Files\Proton\VPN\ProtonVPN.Launcher.exe"
@@ -23,13 +27,43 @@ PROCESS_ACTIONS = {
     "ProtonVPNService.exe": "kill",
     "ProtonVPN.WireGuardService.exe": "kill"
 }
+
 PORT_PATTERN = r"Port pair (\d{1,5})"
-QBIT_PORT_PATTERN = r"(Advanced\\trackerPort=|Session\\Port=)\d+"
+
+# ------------------- LOGGING -------------------
+ENABLE_LOGGING = False
+DEBUG_LOG_PATH = r"C:\Users\<YourUsername>\Documents\vpn_port_debug.log"  # Change path if needed
+
+if ENABLE_LOGGING:
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(DEBUG_LOG_PATH),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+def log(message):
+    if ENABLE_LOGGING:
+        logging.debug(message)
+    else:
+        print(message)
 
 # ------------------- FUNCTIONS -------------------
 
+def check_admin():
+    try:
+        is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        is_admin = False
+    if not is_admin:
+        print("This script requires administrative privileges. Please run as administrator.")
+        time.sleep(10)
+        sys.exit(1)
+
 def terminate_conflicting_processes():
-    print("Checking and terminating conflicting programs...")
+    log("Checking and terminating conflicting programs...")
     found = False
     for proc in psutil.process_iter(['name']):
         try:
@@ -40,17 +74,16 @@ def terminate_conflicting_processes():
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
     if found:
-        print("Processes terminated. Waiting for clean exit...")
+        log("Processes terminated. Waiting for clean exit...")
         time.sleep(3)
     else:
-        print("No conflicting processes found.")
-        time.sleep(1)
-    print(".")
+        log("No conflicting processes found.")
+    log(".")
 
 def start_protonvpn():
-    print("Starting ProtonVPN...")
+    log("Starting ProtonVPN...")
     os.startfile(VPN_EXE)
-    print(".")
+    log(".")
 
 def is_vpn_connected():
     for name, _ in psutil.net_if_addrs().items():
@@ -61,81 +94,91 @@ def is_vpn_connected():
     return False
 
 def wait_for_vpn_connection():
-    print("Waiting for ProtonVPN to connect...")
+    log("Waiting for ProtonVPN to connect...")
     while not is_vpn_connected():
-        print("Still waiting...")
-        time.sleep(5)
-    print("VPN connected.")
-    print(".")
+        log("Still waiting...")
+        time.sleep(2)
+    log("VPN connected.")
+    log(".")
 
 def get_latest_log_file():
     logs = glob.glob(os.path.join(LOG_DIR, "client-logs*"))
     return max(logs, key=os.path.getmtime) if logs else None
 
 def wait_for_port_in_log(log_file):
-    print(f"Watching log file: {log_file}")
+    log(f"Watching log file: {log_file}")
     last_size = os.path.getsize(log_file)
-    print("Waiting for Port pair to appear in the log...")
+    log("Waiting for *new* Port pair to appear in the log...")
+
     while True:
-        time.sleep(2)
-        new_size = os.path.getsize(log_file)
-        if new_size > last_size:
+        current_size = os.path.getsize(log_file)
+        if current_size > last_size:
             with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
                 f.seek(last_size)
                 new_data = f.read()
-                match = re.search(PORT_PATTERN, new_data)
-                if match:
-                    port = match.group(1)
-                    print(f"Found port number: {port}")
-                    print(".")
+                matches = re.findall(PORT_PATTERN, new_data)
+                if matches:
+                    port = matches[-1]
+                    log(f"Found new port number: {port}")
                     return port
-            last_size = new_size
+            last_size = current_size
+        time.sleep(2)
 
 def update_qbittorrent_port(port):
-    print("Updating qBittorrent config...")
+    log("Updating qBittorrent config...")
 
-    config_file = QBIT_CONFIG
     updated = False
     lines = []
 
-    with open(config_file, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            if line.strip().startswith("Session\\Port="):
-                line = f"Session\\Port={port}\n"
-                updated = True
-            lines.append(line)
+    try:
+        with open(QBIT_CONFIG, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.strip().startswith("Session\\Port="):
+                    line = f"Session\\Port={port}\n"
+                    updated = True
+                lines.append(line)
 
-    if updated:
-        with open(config_file, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-        print(f"Port updated to {port}.")
-    else:
-        print("No Session\\Port line found to update.")
+        if updated:
+            with open(QBIT_CONFIG, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+            log(f"Port updated to {port}.")
+        else:
+            log("No Session\\Port line found to update.")
+    except Exception as e:
+        log(f"Error updating config: {e}")
 
 def launch_qbittorrent():
-    print("Starting qBittorrent...")
+    log("Starting qBittorrent...")
     os.startfile(QBIT_EXE)
-    print(".")
-    print("Done.")
-    time.sleep(5)
+    log(".")
 
 # ------------------- MAIN -------------------
 
 def main():
-    terminate_conflicting_processes()
-    start_protonvpn()
-    wait_for_vpn_connection()
+    check_admin()
 
-    log_file = get_latest_log_file()
-    if not log_file:
-        print("No log file found. Exiting.")
-        return
+    try:
+        terminate_conflicting_processes()
+        start_protonvpn()
+        time.sleep(5)
+        wait_for_vpn_connection()
 
-    port = wait_for_port_in_log(log_file)
-    if port:
-        update_qbittorrent_port(port)
-        launch_qbittorrent()
+        log_file = get_latest_log_file()
+        if not log_file:
+            log("No log file found. Exiting.")
+            return
+
+        port = wait_for_port_in_log(log_file)
+        if port:
+            update_qbittorrent_port(port)
+            launch_qbittorrent()
+
+    except KeyboardInterrupt:
+        log("Script interrupted by user.")
+    except Exception as e:
+        log(f"Fatal error: {e}")
 
 if __name__ == "__main__":
     main()
-
+    print("This window will close in 10 seconds...")
+    time.sleep(10)
