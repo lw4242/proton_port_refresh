@@ -1,14 +1,19 @@
-# This script kills Deluge, ProtonVPN and all its associated components, then restarts everything and copies the port number into Deluge's config file
-# Tested working as of ProtonVPN client 4.1.12 and Deluge client 2.2.0
-# Be sure to run this script as admin (some kill commands require elevation) and configure your ProtonVPN client to connect to a random server on startup
+# This script kills Deluge, ProtonVPN and all their associated components, then restarts everything and copies the port number into Deluge's config file
+# Tested working as of ProtonVPN client 4.1.12 and Deluge 2.2.0
+# It must be run as an administrator
+# Configure your ProtonVPN client to connect to a random server on startup
 # Also change your directories in the CONFIG section of this script to match the correct paths for your system
+# If enabling debug logging then set LOGGING_ENABLED = True and provide a valid file path
+
 
 import os
 import re
 import time
 import psutil
 import glob
-import subprocess
+import logging
+import sys
+import ctypes
 
 # ------------------- CONFIG -------------------
 VPN_EXE = r"C:\Program Files\Proton\VPN\ProtonVPN.Launcher.exe"
@@ -25,12 +30,41 @@ PROCESS_ACTIONS = {
 }
 
 PORT_PATTERN = r"Port pair (\d{1,5})"
-DELUGE_PORT_PATTERN = r'"listen_ports":\s*\[\s*(\d{1,5})\s*\]'
+
+# ------------------- LOGGING -------------------
+ENABLE_LOGGING = False
+DEBUG_LOG_PATH = r"C:\Users\<YourUsername>\Documents\vpn_port_debug_deluge.log"  # Change if needed
+
+if ENABLE_LOGGING:
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(DEBUG_LOG_PATH),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+def log(message):
+    if ENABLE_LOGGING:
+        logging.debug(message)
+    else:
+        print(message)
 
 # ------------------- FUNCTIONS -------------------
 
+def check_admin():
+    try:
+        is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        is_admin = False
+    if not is_admin:
+        print("This script requires administrative privileges. Please run as administrator.")
+        time.sleep(10)
+        sys.exit(1)
+
 def terminate_conflicting_processes():
-    print("Checking and terminating conflicting programs...")
+    log("Checking and terminating conflicting programs...")
     found = False
     for proc in psutil.process_iter(['name']):
         try:
@@ -41,17 +75,16 @@ def terminate_conflicting_processes():
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
     if found:
-        print("Processes terminated. Waiting for clean exit...")
+        log("Processes terminated. Waiting for clean exit...")
         time.sleep(3)
     else:
-        print("No conflicting processes found.")
-        time.sleep(1)
-    print(".")
+        log("No conflicting processes found.")
+    log(".")
 
 def start_protonvpn():
-    print("Starting ProtonVPN...")
+    log("Starting ProtonVPN...")
     os.startfile(VPN_EXE)
-    print(".")
+    log(".")
 
 def is_vpn_connected():
     for name, _ in psutil.net_if_addrs().items():
@@ -62,78 +95,89 @@ def is_vpn_connected():
     return False
 
 def wait_for_vpn_connection():
-    print("Waiting for ProtonVPN to connect...")
+    log("Waiting for ProtonVPN to connect...")
     while not is_vpn_connected():
-        print("Still waiting...")
-        time.sleep(5)
-    print("VPN connected.")
-    print(".")
+        log("Still waiting...")
+        time.sleep(2)
+    log("VPN connected.")
+    log(".")
 
 def get_latest_log_file():
     logs = glob.glob(os.path.join(LOG_DIR, "client-logs*"))
     return max(logs, key=os.path.getmtime) if logs else None
 
 def wait_for_port_in_log(log_file):
-    print(f"Watching log file: {log_file}")
+    log(f"Watching log file: {log_file}")
     last_size = os.path.getsize(log_file)
-    print("Waiting for Port pair to appear in the log...")
+    log("Waiting for *new* Port pair to appear in the log...")
+
     while True:
-        time.sleep(2)
-        new_size = os.path.getsize(log_file)
-        if new_size > last_size:
+        current_size = os.path.getsize(log_file)
+        if current_size > last_size:
             with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
                 f.seek(last_size)
                 new_data = f.read()
-                match = re.search(PORT_PATTERN, new_data)
-                if match:
-                    port = match.group(1)
-                    print(f"Found port number: {port}")
-                    print(".")
+                matches = re.findall(PORT_PATTERN, new_data)
+                if matches:
+                    port = matches[-1]
+                    log(f"Found new port number: {port}")
                     return port
-            last_size = new_size
+            last_size = current_size
+        time.sleep(2)
 
 def update_deluge_port(port):
-    print("Updating Deluge config...")
+    log("Updating Deluge config...")
 
-    with open(DELUGE_CONFIG, "r", encoding="utf-8") as f:
-        config = f.read()
+    try:
+        with open(DELUGE_CONFIG, "r", encoding="utf-8") as f:
+            config = f.read()
 
-    # Regex: match optional whitespace before the key
-    pattern = r'\s*"listen_ports"\s*:\s*\[\s*\d{1,5}\s*,\s*\d{1,5}\s*\]'
-    new_block = f'    "listen_ports": [\n        {port},\n        {port}\n    ]'
+        pattern = r'\s*"listen_ports"\s*:\s*\[\s*\d{1,5}\s*,\s*\d{1,5}\s*\]'
+        new_block = f'    "listen_ports": [\n        {port},\n        {port}\n    ]'
 
-    new_config, count = re.subn(pattern, new_block, config, flags=re.DOTALL)
+        new_config, count = re.subn(pattern, new_block, config, flags=re.DOTALL)
 
-    if count:
-        with open(DELUGE_CONFIG, "w", encoding="utf-8") as f:
-            f.write(new_config)
-        print(f"Port updated to {port}.")
-    else:
-        print("Failed to find or update listen_ports in Deluge config.")
+        if count:
+            with open(DELUGE_CONFIG, "w", encoding="utf-8") as f:
+                f.write(new_config)
+            log(f"Port updated to {port}.")
+        else:
+            log("Failed to find or update listen_ports in Deluge config.")
+    except Exception as e:
+        log(f"Error updating Deluge config: {e}")
 
 def launch_deluge():
-    print("Starting Deluge...")
+    log("Starting Deluge...")
     os.startfile(DELUGE_EXE)
-    print(".")
-    print("Done.")
-    time.sleep(5)
+    log(".")
 
 # ------------------- MAIN -------------------
 
 def main():
-    terminate_conflicting_processes()
-    start_protonvpn()
-    wait_for_vpn_connection()
+    check_admin()
 
-    log_file = get_latest_log_file()
-    if not log_file:
-        print("No log file found. Exiting.")
-        return
+    try:
+        terminate_conflicting_processes()
+        start_protonvpn()
+        time.sleep(5)
+        wait_for_vpn_connection()
 
-    port = wait_for_port_in_log(log_file)
-    if port:
-        update_deluge_port(port)
-        launch_deluge()
+        log_file = get_latest_log_file()
+        if not log_file:
+            log("No log file found. Exiting.")
+            return
+
+        port = wait_for_port_in_log(log_file)
+        if port:
+            update_deluge_port(port)
+            launch_deluge()
+
+    except KeyboardInterrupt:
+        log("Script interrupted by user.")
+    except Exception as e:
+        log(f"Fatal error: {e}")
 
 if __name__ == "__main__":
     main()
+    print("This window will close in 10 seconds...")
+    time.sleep(10)
