@@ -1,3 +1,5 @@
+**THESE SCRIPTS ARE FOR WINDOWS**
+
 Instructions:
 
     1. Download and install Python. There should be an option for "Add to PATH variables" during installation - make sure it is enabled
