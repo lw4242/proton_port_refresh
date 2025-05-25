@@ -18,8 +18,8 @@ import ctypes
 # ------------------- CONFIG -------------------
 VPN_EXE = r"C:\Program Files\Proton\VPN\ProtonVPN.Launcher.exe"
 DELUGE_EXE = r"C:\Program Files\Deluge\deluge.exe"
-DELUGE_CONFIG = r"C:\Users\<YourUsername>\AppData\Roaming\deluge\core.conf"
-LOG_DIR = r"C:\Users\<YourUsername>\AppData\Local\Proton\Proton VPN\Logs"
+DELUGE_CONFIG = r"C:\Users\Plex\AppData\Roaming\deluge\core.conf"
+LOG_DIR = r"C:\Users\Plex\AppData\Local\Proton\Proton VPN\Logs"
 
 PROCESS_ACTIONS = {
     "openvpn.exe": "kill",
@@ -32,8 +32,8 @@ PROCESS_ACTIONS = {
 PORT_PATTERN = r"Port pair (\d{1,5})"
 
 # ------------------- LOGGING -------------------
-ENABLE_LOGGING = False
-DEBUG_LOG_PATH = r"C:\Users\<YourUsername>\Documents\vpn_port_debug_deluge.log"  # Change if needed
+ENABLE_LOGGING = True
+DEBUG_LOG_PATH = r"C:\Users\Plex\Documents\vpn_port_debug_deluge.log"  # Change if needed
 
 if ENABLE_LOGGING:
     logging.basicConfig(
