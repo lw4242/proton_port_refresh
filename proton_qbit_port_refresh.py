@@ -17,8 +17,8 @@ import ctypes
 # ------------------- CONFIG -------------------
 VPN_EXE = r"C:\Program Files\Proton\VPN\ProtonVPN.Launcher.exe"
 QBIT_EXE = r"C:\Program Files\qBittorrent\qbittorrent.exe"
-QBIT_CONFIG = r"C:\Users\<YourUsername>\AppData\Roaming\qBittorrent\qBittorrent.ini"
-LOG_DIR = r"C:\Users\<YourUsername>\AppData\Local\Proton\Proton VPN\Logs"
+QBIT_CONFIG = r"C:\Users\Plex\AppData\Roaming\qBittorrent\qBittorrent.ini"
+LOG_DIR = r"C:\Users\Plex\AppData\Local\Proton\Proton VPN\Logs"
 
 PROCESS_ACTIONS = {
     "openvpn.exe": "kill",
@@ -31,8 +31,8 @@ PROCESS_ACTIONS = {
 PORT_PATTERN = r"Port pair (\d{1,5})"
 
 # ------------------- LOGGING -------------------
-ENABLE_LOGGING = False
-DEBUG_LOG_PATH = r"C:\Users\<YourUsername>\Documents\vpn_port_debug.log"  # Change path if needed
+ENABLE_LOGGING = True
+DEBUG_LOG_PATH = r"C:\Users\Plex\Documents\vpn_port_debug.log"  # Change path if needed
 
 if ENABLE_LOGGING:
     logging.basicConfig(
