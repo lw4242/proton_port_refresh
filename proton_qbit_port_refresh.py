@@ -1,5 +1,5 @@
 # This script kills qBittorrent, ProtonVPN and all their associated components, then restarts everything and copies the port number into qBittorrent's config file
-# Tested working as of ProtonVPN client 4.1.12 and qBittorrent 5.1.0
+# Tested working as of ProtonVPN client 4.2.1 and qBittorrent 5.1.2
 # It must be run as an administrator
 # Configure your ProtonVPN client to connect to a random server on startup
 # Also change your directories in the CONFIG section of this script to match the correct paths for your system
@@ -105,12 +105,13 @@ def get_latest_log_file():
     logs = glob.glob(os.path.join(LOG_DIR, "client-logs*"))
     return max(logs, key=os.path.getmtime) if logs else None
 
-def wait_for_port_in_log(log_file):
+def wait_for_port_in_log(log_file, timeout=60):
     log(f"Watching log file: {log_file}")
     last_size = os.path.getsize(log_file)
     log("Waiting for *new* Port pair to appear in the log...")
 
-    while True:
+    start_time = time.time()
+    while time.time() - start_time < timeout:
         current_size = os.path.getsize(log_file)
         if current_size > last_size:
             with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
@@ -123,6 +124,9 @@ def wait_for_port_in_log(log_file):
                     return port
             last_size = current_size
         time.sleep(2)
+
+    log("Timeout waiting for port number.")
+    raise TimeoutError("Failed to detect port number within timeout.")
 
 def update_qbittorrent_port(port):
     log("Updating qBittorrent config...")
@@ -168,10 +172,15 @@ def main():
             log("No log file found. Exiting.")
             return
 
-        port = wait_for_port_in_log(log_file)
+        port = wait_for_port_in_log(log_file, timeout=60)
         if port:
             update_qbittorrent_port(port)
             launch_qbittorrent()
+
+    except TimeoutError as te:
+        log(f"{te}. Restarting script...")
+        python = sys.executable
+        os.execl(python, python, *sys.argv)
 
     except KeyboardInterrupt:
         log("Script interrupted by user.")
