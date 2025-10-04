@@ -1,6 +1,6 @@
 # This script kills qBittorrent, ProtonVPN and all their associated components
 # Then restarts everything, copies the port number into qBittorrent's config file, and updates network adapter token name if necessary
-# Tested working as of ProtonVPN client 4.2.1 and qBittorrent 5.1.2, on a Windows 11 Pro 24H2 install (build 26100.4652)
+# Tested working as of ProtonVPN client 4.3.1 and qBittorrent 5.1.2, on a Windows 11 Pro 24H2 install (build 26100.6584)
 # It must be run as an administrator. If adding to Task Scheduler then make sure 'run with the highest privileges' is ticked
 # Configure your ProtonVPN client to connect to a random server on startup
 # Also change your directories and paths in the CONFIG section of this script to match the correct paths for your system
@@ -14,42 +14,47 @@ import logging
 import sys
 import ctypes
 import subprocess
+from datetime import datetime, timezone
 from ctypes import wintypes
 
 # ------------------- CONFIG -------------------
 
-VPN_EXE = r"C:\Program Files\Proton\VPN\ProtonVPN.Launcher.exe" #Path to ProtonVPN.Launcher.exe
-QBIT_EXE = r"C:\Program Files\qBittorrent\qbittorrent.exe" #Path to qBittorrent.exe
+VPN_EXE = r"C:\Program Files\Proton\VPN\ProtonVPN.Launcher.exe"
+QBIT_EXE = r"C:\Program Files\qBittorrent\qbittorrent.exe"
 
-LOG_DIR = r"C:\Users\Plex\AppData\Local\Proton\Proton VPN\Logs" #Path to ProtonVPN Logs dir
-QBIT_CONFIG = r"C:\Users\Plex\AppData\Roaming\qBittorrent\qBittorrent.ini" #Path to qBittorrrent.ini
+LOG_DIR = r"C:\Users\Plex\AppData\Local\Proton\Proton VPN\Logs"
+QBIT_CONFIG = r"C:\Users\Plex\AppData\Roaming\qBittorrent\qBittorrent.ini"
 
-#When TOKEN_ENFORCEMENT = 1, ensures qBittorrent binds the correct ProtonVPN adapter (usually iftype53_32768 or iftype53_32769)
-#This prevents leaks and prevents connection failures when the adapter token assigned by Windows has changed (resulting in ProtonVPN appearing twice in the dropdown)
+# Name ProtonVPN's interface appears as in your taskbar
+# Used in script to check whether interface is up
+# Also used as a name match for token enforcement if enabled (see below)
+VPN_INTERFACE_FRIENDLY_NAME = "ProtonVPN"
+
+# Enforce checking of current adapter token and writing into qBittorrent.ini
+# Ideally enable as it will prevent the issue of ProtonVPN appearing twice in the qBittorrent dropdown when Windows refreshes its token
+# But can be disabled if this causes problems
 TOKEN_ENFORCEMENT = 1
 
-CLIENT_TIMEOUT = 60 #Maximum number of seconds to wait for VPN interface to come up after restart
-MAX_RESTARTS = 3 #How many times the script will re-exec if VPN fails to connect or no port is found
+# Maximum number of script restarts before aborting
+# Prevents network thrashing if there's a problem that is preventing the script completing
+MAX_RESTARTS = 3
 
-#When PORT_CHANGE_ENFORCEMENT = 1, consider success only if most recent port before launching ProtonVPN =/= most recent port after launching ProtonVPN
-#This is to ensure that (a) randomise server is working and (b) the app itself is working
-#Turn this off if you anticipate the port remaining the same between launches as expected behaviour
-PORT_CHANGE_ENFORCEMENT = 1
+# Enforce that the forwarded port after restart differs from the last seen port
+PORT_CHANGE_ENFORCEMENT = 1    # disable if the port remaining the same is an expected behaviour in your use case
 PORT_CHANGE_RETRIES = 2      # additional full restart cycles if port did not change
 PORT_CHANGE_WAIT = 60        # seconds to wait for a post-restart port
-PORT_STABILIZE_SLEEP = 30    # seconds to allow Proton services to settle after start
+CLIENT_TIMEOUT = 120    # seconds to allow Proton services to settle after start
 PORT_POLL_INTERVAL = 5       # seconds between log scans for forwarded port
 
-#Logging debug output of THIS SCRIPT
-#Recommended for troubleshooting purposes
+# Script debug output
 ENABLE_LOGGING = True
 DEBUG_LOG_PATH = r"C:\Users\Plex\Documents\vpn_port_debug.log"
 
 # ------------------- FLAGS -------------------
 
-# Matches "Port pair 52070->52070", "Forwarded port: 52070", "Assigned port 52070"
+# Matches "Port pair XXXXX->XXXXX", "Forwarded port: XXXXX", "Assigned port: XXXXX"
 PORT_PATTERN = r"(?:Port\s*pair|Forwarded\s*port|Assigned\s*port)\D+(\d{2,5})"
-VPN_INTERFACE_FRIENDLY_NAME = "ProtonVPN"
+TIMESTAMP_PATTERN = r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)"
 
 PROCESS_ACTIONS = {
     "openvpn.exe": "kill",
@@ -120,6 +125,21 @@ def start_protonvpn() -> None:
     log("Starting ProtonVPN...")
     os.startfile(VPN_EXE)
 
+def wait_for_adapter_up(adapter_name: str, timeout: int = CLIENT_TIMEOUT, poll_interval: int = 2) -> bool:
+    """
+    Wait until the given network adapter reports as 'up'.
+    Returns True if the adapter is up within the timeout, False otherwise.
+    """
+    log(f"Waiting for adapter '{adapter_name}' to come up...")
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        stats = psutil.net_if_stats().get(adapter_name)
+        if stats and stats.isup:
+            log(f"Adapter '{adapter_name}' is up.")
+            return True
+        time.sleep(poll_interval)
+    log(f"Adapter '{adapter_name}' did not come up within {timeout} seconds.")
+    return False
 
 def is_vpn_connected() -> bool:
     for name, _ in psutil.net_if_addrs().items():
@@ -145,6 +165,17 @@ def wait_for_vpn_connection(timeout: int = CLIENT_TIMEOUT) -> None:
 
 
 # ------------------- PROTONVPN LOG SCRAPE -------------------
+
+TIMESTAMP_PATTERN = r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)"
+def _parse_timestamp(line: str) -> datetime | None:
+    m = re.match(TIMESTAMP_PATTERN, line)
+    if not m:
+        return None
+    try:
+        ts = datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S.%fZ")
+        return ts.replace(tzinfo=timezone.utc).astimezone()
+    except Exception:
+        return None
 
 def _candidate_logs():
     # Include all .log and files starting with client-logs (covers rotations without .log)
@@ -177,21 +208,37 @@ def get_last_forwarded_port_from_file(path: str) -> str | None:
 
 
 def get_last_forwarded_port_from_logs() -> str | None:
-    # Search all candidate logs and take the most recent match by file mtime
-    best = None
-    best_ts = -1
-    for p in _candidate_logs():
-        port = get_last_forwarded_port_from_file(p)
-        if port:
-            ts = os.path.getmtime(p)
-            if ts > best_ts:
-                best = port
-                best_ts = ts
-    if best:
-        log(f"Most recent forwarded port found in logs: {best}")
-    else:
+    """
+    Scan all ProtonVPN client logs for the most recent valid forwarded port.
+    Only considers 'PortMappingCommunication' or 'Assigned port' lines,
+    ignoring repeated 'SleepingUntilRefresh' entries. Returns the port
+    with the newest timestamp overall.
+    """
+    port_times: dict[str, datetime] = {}
+
+    for path in _candidate_logs():
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if "PortMappingCommunication" not in line and "Assigned port" not in line:
+                        continue
+                    port_match = re.search(PORT_PATTERN, line, flags=re.IGNORECASE)
+                    if port_match:
+                        ts = _parse_timestamp(line)
+                        if ts:
+                            port = port_match.group(1)
+                            if port not in port_times or ts > port_times[port]:
+                                port_times[port] = ts
+        except Exception as e:
+            log(f"Error reading {path}: {e}")
+
+    if not port_times:
         log("No forwarded port found in any log.")
-    return best
+        return None
+
+    newest_port = max(port_times, key=lambda p: port_times[p])
+    log(f"Newest forwarded port found: {newest_port} at {port_times[newest_port]}")
+    return newest_port
 
 
 def wait_for_port_in_log(log_file: str, timeout: int = 60, poll_interval: int = PORT_POLL_INTERVAL) -> str | None:
@@ -365,18 +412,47 @@ def launch_qbittorrent() -> None:
 
 # ------------------- ORCHESTRATION -------------------
 
-def vpn_restart_cycle() -> str | None:
+def vpn_restart_cycle(prev_port: str | None = None) -> str | None:
     terminate_conflicting_processes()
     start_protonvpn()
-    time.sleep(PORT_STABILIZE_SLEEP)
+
+    restart_time = datetime.now().astimezone()
+
+    if not wait_for_adapter_up(VPN_INTERFACE_FRIENDLY_NAME, timeout=CLIENT_TIMEOUT):
+        raise TimeoutError("ProtonVPN adapter did not come up in time.")
     wait_for_vpn_connection(timeout=CLIENT_TIMEOUT)
-    log_file = get_latest_log_file()
-    post_port = None
-    if log_file:
-        post_port = wait_for_port_in_log(log_file, timeout=PORT_CHANGE_WAIT, poll_interval=PORT_POLL_INTERVAL)
-    else:
-        log("No ProtonVPN log file found after restart.")
-    return post_port
+
+    log("Waiting for a new forwarded port entry in logs...")
+    t0 = time.time()
+    while time.time() - t0 < PORT_CHANGE_WAIT:
+        port_times: dict[str, datetime] = {}
+        for path in _candidate_logs():
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if "PortMappingCommunication" not in line and "Assigned port" not in line:
+                            continue
+                        m = re.search(PORT_PATTERN, line, flags=re.IGNORECASE)
+                        if m:
+                            ts = _parse_timestamp(line)
+                            if ts and ts > restart_time:  # only accept lines newer than restart
+                                port_times[m.group(1)] = ts
+            except Exception:
+                continue
+
+        if port_times:
+            newest_port = max(port_times, key=lambda p: port_times[p])
+            newest_time = port_times[newest_port]
+            log(f"New forwarded port {newest_port} detected at {newest_time}")
+            return newest_port
+
+        time.sleep(PORT_POLL_INTERVAL)
+
+    log("Timeout: no new forwarded port appeared after restart.")
+    return None
+
+
+
 
 
 # ------------------- MAIN -------------------
