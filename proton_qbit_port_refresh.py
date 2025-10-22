@@ -1,6 +1,6 @@
 # This script kills qBittorrent, ProtonVPN and all their associated components
 # Then restarts everything, copies the port number into qBittorrent's config file, and updates network adapter token name if necessary
-# Tested working as of ProtonVPN client 4.3.1 and qBittorrent 5.1.2, on a Windows 11 Pro 24H2 install (build 26100.6584)
+# Tested working as of ProtonVPN client 4.3.4 and qBittorrent 5.1.2, on a Windows 11 Pro 24H2 install (build 26100.6899)
 # It must be run as an administrator. If adding to Task Scheduler then make sure 'run with the highest privileges' is ticked
 # Configure your ProtonVPN client to connect to a random server on startup
 # Also change your directories and paths in the CONFIG section of this script to match the correct paths for your system
@@ -49,6 +49,9 @@ PORT_POLL_INTERVAL = 5       # seconds between log scans for forwarded port
 # Script debug output
 ENABLE_LOGGING = True
 DEBUG_LOG_PATH = r"C:\Users\Plex\Documents\vpn_port_debug.log"
+
+# Keep script alive and re-poll logs every X minutes for port changes (0 disables)
+PORT_REPOLL_MINUTES = 0
 
 # ------------------- FLAGS -------------------
 
@@ -162,6 +165,25 @@ def wait_for_vpn_connection(timeout: int = CLIENT_TIMEOUT) -> None:
             return
         time.sleep(2)
     raise TimeoutError("VPN did not connect within timeout")
+
+
+def terminate_qbittorrent_only() -> None:
+    """Terminate only qBittorrent without touching VPN processes."""
+    log("Terminating qBittorrent...")
+    procs = []
+    for proc in psutil.process_iter(['name']):
+        try:
+            if (proc.info['name'] or "").lower() == "qbittorrent.exe":
+                proc.terminate()
+                procs.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    if procs:
+        psutil.wait_procs(procs, timeout=5)
+        time.sleep(1)  # allow handles to release
+        log("qBittorrent terminated.")
+    else:
+        log("qBittorrent not running.")
 
 
 # ------------------- PROTONVPN LOG SCRAPE -------------------
@@ -496,6 +518,23 @@ def main() -> None:
 
         enforce_vpn_binding()
         launch_qbittorrent()
+        # Optional keep-alive re-poll loop
+        if PORT_REPOLL_MINUTES and PORT_REPOLL_MINUTES > 0:
+            log(f"Re-polling every {PORT_REPOLL_MINUTES} minutes for port changes.")
+            last_port = post_port or previous_port or get_last_forwarded_port_from_logs()
+            while True:
+                time.sleep(PORT_REPOLL_MINUTES * 60)
+                current_port = get_last_forwarded_port_from_logs()
+                if current_port and current_port != last_port:
+                    log(f"Detected port change {last_port} to {current_port}")
+                    # Ensure qBittorrent restarts on the new port
+                    terminate_qbittorrent_only()
+                    update_qbittorrent_port(current_port)
+                    enforce_vpn_binding()
+                    launch_qbittorrent()
+                    last_port = current_port
+                else:
+                    log("No port change detected in this interval.")
 
     except TimeoutError as te:
         if not is_vpn_connected():
