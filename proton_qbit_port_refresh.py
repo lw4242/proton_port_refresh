@@ -1,6 +1,6 @@
 # This script kills qBittorrent, ProtonVPN and all their associated components
-# Then restarts everything, copies the port number into qBittorrent's config file, and updates network adapter token name if necessary
-# Tested working as of ProtonVPN client 4.3.4 and qBittorrent 5.1.2, on a Windows 11 Pro 24H2 install (build 26100.6899)
+# Then restarts everything, copies the port number into qBittorrent's config file, and updates ProtonVPN IP entry in config file if necessary
+# Tested working as of ProtonVPN client 4.3.5 and qBittorrent 5.1.2, on a Windows 11 Pro 24H2 install (build 26100.6899)
 # It must be run as an administrator. If adding to Task Scheduler then make sure 'run with the highest privileges' is ticked
 # Configure your ProtonVPN client to connect to a random server on startup
 # Also change your directories and paths in the CONFIG section of this script to match the correct paths for your system
@@ -14,6 +14,7 @@ import logging
 import sys
 import ctypes
 import subprocess
+import socket
 from datetime import datetime, timezone
 from ctypes import wintypes
 
@@ -29,11 +30,6 @@ QBIT_CONFIG = r"C:\Users\Plex\AppData\Roaming\qBittorrent\qBittorrent.ini"
 # Used in script to check whether interface is up
 # Also used as a name match for token enforcement if enabled (see below)
 VPN_INTERFACE_FRIENDLY_NAME = "ProtonVPN"
-
-# Enforce checking of current adapter token and writing into qBittorrent.ini
-# Ideally enable as it will prevent the issue of ProtonVPN appearing twice in the qBittorrent dropdown when Windows refreshes its token
-# But can be disabled if this causes problems
-TOKEN_ENFORCEMENT = 1
 
 # Maximum number of script restarts before aborting
 # Prevents network thrashing if there's a problem that is preventing the script completing
@@ -320,110 +316,95 @@ def update_qbittorrent_port(port: str) -> None:
 
 # ------------------- ADAPTER TOKEN -------------------
 
-class NET_LUID_LH(ctypes.Structure):
-    _fields_ = [("Value", ctypes.c_ulonglong)]
 
-
-iphlpapi = ctypes.WinDLL("iphlpapi")
-ConvertInterfaceIndexToLuid = iphlpapi.ConvertInterfaceIndexToLuid
-ConvertInterfaceIndexToLuid.argtypes = [wintypes.ULONG, ctypes.POINTER(NET_LUID_LH)]
-ConvertInterfaceIndexToLuid.restype = wintypes.ULONG
-
-
-def _luid_token_from_index(idx: int) -> str | None:
-    luid = NET_LUID_LH(0)
-    ret = ConvertInterfaceIndexToLuid(idx, ctypes.byref(luid))
-    if ret != 0:
-        return None
-    val = int(luid.Value)
-    iftype = (val >> 48) & 0xFFFF
-    netluid_index = (val >> 24) & 0xFFFFFF
-    return f"iftype{iftype}_{netluid_index}"
-
-
-def _get_adapter_token_by_name(name_substring: str) -> str | None:
-    try:
-        proc = subprocess.run(
-            ["netsh", "interface", "ipv4", "show", "interfaces"],
-            capture_output=True, text=True, check=True
-        )
-    except Exception:
-        return None
-    rx = re.compile(r"^\s*(\d+)\s+\d+\s+\d+\s+\S+\s+(.*\S)\s*$")
-    for line in proc.stdout.splitlines():
-        m = rx.match(line)
-        if m:
-            idx = int(m.group(1))
-            name = m.group(2)
-            if name_substring.lower() in name.lower():
-                log(f"Matched adapter: {name}")
-                return _luid_token_from_index(idx)
+def _get_adapter_ipv4_by_name(name_substring: str) -> str | None:
+    for name, addrs in psutil.net_if_addrs().items():
+        stats = psutil.net_if_stats().get(name)
+        if not stats or not stats.isup:
+            continue
+        if name_substring.lower() not in name.lower():
+            continue
+        for addr in addrs:
+            if addr.family == socket.AF_INET and addr.address and addr.address != "127.0.0.1":
+                return addr.address
     return None
 
+def wait_for_vpn_ip(name_substring: str, timeout: int = 20) -> str | None:
+    """Wait until the specified adapter has a valid IPv4 address."""
+    for _ in range(timeout):
+        ipaddr = _get_adapter_ipv4_by_name(name_substring)
+        if ipaddr:
+            return ipaddr
+        time.sleep(1)
+    return None
 
 def enforce_vpn_binding() -> None:
-    if TOKEN_ENFORCEMENT != 1:
-        log("Token enforcement disabled.")
+    import socket, time
+
+    ipaddr = wait_for_vpn_ip(VPN_INTERFACE_FRIENDLY_NAME)
+    if not ipaddr:
+        log("Timed out waiting for ProtonVPN IPv4 address.")
         return
-
-    token = _get_adapter_token_by_name(VPN_INTERFACE_FRIENDLY_NAME)
-    if not token:
-        log("VPN adapter token not found; skipping binding enforcement.")
-        return
-    log(f"Current adapter token: {token}")
-
-    keep_key_name = "Session\\InterfaceName"
-    keep_key_token = "Session\\Interface"
-    drop_prefixes = ("Session\\InterfaceId=", "Session\\InterfaceAddress=")
-
-    desired_name_line = f"{keep_key_name}={VPN_INTERFACE_FRIENDLY_NAME}\n"
-    desired_token_line = f"{keep_key_token}={token}\n"
 
     try:
         with open(QBIT_CONFIG, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
     except Exception as e:
-        log(f"Unable to read qBittorrent config for binding enforcement: {e}")
+        log(f"Unable to read qBittorrent config: {e}")
         return
 
     out = []
-    have_bt = False
-    have_name = False
-    have_token = False
+    in_bt_section = False
+    wrote_name = wrote_ip = False
 
     for line in lines:
-        s = line.strip()
-        if s.lower() == "[bittorrent]":
-            have_bt = True
+        stripped = line.strip()
+
+        if stripped.startswith("["):
+            # when a new section begins, close BitTorrent section if we were in it
+            if in_bt_section and not (wrote_name and wrote_ip):
+                if not wrote_name:
+                    out.append(f"Session\\InterfaceName={VPN_INTERFACE_FRIENDLY_NAME}\n")
+                if not wrote_ip:
+                    out.append(f"Session\\InterfaceAddress={ipaddr}\n")
+            in_bt_section = stripped.lower() == "[bittorrent]"
             out.append(line)
             continue
-        if s.startswith(keep_key_name + "="):
-            out.append(desired_name_line)
-            have_name = True
-            continue
-        if s.startswith(keep_key_token + "="):
-            out.append(desired_token_line)
-            have_token = True
-            continue
-        if any(s.startswith(p) for p in drop_prefixes):
-            continue
+
+        if in_bt_section:
+            if stripped.startswith("Session\\InterfaceName="):
+                out.append(f"Session\\InterfaceName={VPN_INTERFACE_FRIENDLY_NAME}\n")
+                wrote_name = True
+                continue
+            if stripped.startswith("Session\\InterfaceAddress="):
+                out.append(f"Session\\InterfaceAddress={ipaddr}\n")
+                wrote_ip = True
+                continue
+            if stripped.startswith("Session\\Interface=") or stripped.startswith("Session\\InterfaceId="):
+                # drop any obsolete token entries
+                continue
+
         out.append(line)
 
-    if not have_name or not have_token:
-        if not have_bt:
-            out.append("[BitTorrent]\n")
-        if not have_name:
-            out.append(desired_name_line)
-        if not have_token:
-            out.append(desired_token_line)
+    # if [BitTorrent] section was never found, create it
+    if not any("[BitTorrent]" in l for l in out):
+        out.append("[BitTorrent]\n")
+        out.append(f"Session\\InterfaceName={VPN_INTERFACE_FRIENDLY_NAME}\n")
+        out.append(f"Session\\InterfaceAddress={ipaddr}\n")
+    else:
+        # if BitTorrent section existed but lines missing, append now
+        if in_bt_section and (not wrote_name or not wrote_ip):
+            if not wrote_name:
+                out.append(f"Session\\InterfaceName={VPN_INTERFACE_FRIENDLY_NAME}\n")
+            if not wrote_ip:
+                out.append(f"Session\\InterfaceAddress={ipaddr}\n")
 
     try:
         with open(QBIT_CONFIG, "w", encoding="utf-8") as f:
             f.writelines(out)
-        log("Enforced VPN binding updated.")
+        log(f"Updated [BitTorrent] binding to ProtonVPN ({ipaddr}).")
     except Exception as e:
-        log(f"Unable to write qBittorrent config for binding enforcement: {e}")
-
+        log(f"Unable to write qBittorrent config: {e}")
 
 # ------------------- LAUNCH -------------------
 
